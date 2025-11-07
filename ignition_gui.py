@@ -192,6 +192,9 @@ def _make_plot(df: pd.DataFrame, t: np.ndarray, signals: List[str], legend_map: 
         legend_title="Channels",
         margin=dict(l=40, r=10, t=70, b=40),
         height=560,
+      template="plotly_white",
+    colorway=["#636EFA","#EF553B","#00CC96","#AB63FA","#FFA15A",
+              "#19D3F3","#FF6692","#B6E880","#FF97FF","#FECB52"]
     )
     return fig
 
@@ -468,3 +471,4 @@ meta_bytes = json.dumps(meta, indent=2).encode("utf-8")
 st.download_button("Download session meta (JSON)", data=meta_bytes, file_name=f"{base_name}_meta.json", mime="application/json")
 
 st.caption("© Spacefield – Local analysis utility. Built with Streamlit.")
+

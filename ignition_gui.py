@@ -471,4 +471,16 @@ meta_bytes = json.dumps(meta, indent=2).encode("utf-8")
 st.download_button("Download session meta (JSON)", data=meta_bytes, file_name=f"{base_name}_meta.json", mime="application/json")
 
 st.caption("© Spacefield – Local analysis utility. Built with Streamlit.")
+import traceback
+
+def run():
+    # MOVE everything from st.set_page_config(...) down to here
+    pass
+
+try:
+    run()
+except Exception:
+    st.error("Unexpected error in app:")
+    st.code("".join(traceback.format_exc()))
+
 

@@ -1,9 +1,7 @@
-streamlit
-plotly
-pandas
-numpy
-matplotlib
-scipy
-nptdms
-kaleido
-
+streamlit>=1.36
+plotly>=5.22
+kaleido==0.2.1
+pandas>=2.1,<3
+numpy>=1.24,<3
+scipy>=1.10
+nptdms>=1.8

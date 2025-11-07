@@ -1,14 +1,13 @@
 """
-Ignition Data GUI – Streamlit (v4: MANUAL burn markers)
+Ignition Data GUI – Streamlit (v4: MANUAL burn markers, hardened)
 
-What’s new in v4:
-- NO auto burn detection.
-- You pick burn START and STOP with a range slider (and numeric boxes).
-- Plot & exports use ZERO-BASED time within the trimmed window.
-
-Run:
-  pip install streamlit pandas numpy plotly nptdms kaleido scipy matplotlib
-  streamlit run ignition_gui.py
+- CSV or TDMS upload
+- Build time from sample rate OR use existing time column
+- Trim window; plot/export use ZERO-BASED time inside the trim
+- Multi-channel plot with smoothing
+- Optional ignition flag (manual/threshold/existing)
+- Manual burn START/STOP markers (range-slider + inputs)
+- Distinct colors in Kaleido PNG export
 """
 
 from pathlib import Path
@@ -19,6 +18,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
+import traceback
 
 # ---------------------------
 # Optional dependency (TDMS)
@@ -85,9 +85,6 @@ def _load_csv(file, sep: Optional[str], header_row: bool, skiprows: int,
         encoding=encoding,
         on_bad_lines=on_bad_lines if use_engine == 'python' else None,
     )
-
-    if hdr is None:
-        df.columns = [f"col_{i}" for i in range(df.shape[1])]
     return df
 
 
@@ -161,7 +158,7 @@ def _make_plot(df: pd.DataFrame, t: np.ndarray, signals: List[str], legend_map: 
     """Plot multiple channels against zero-based time array; show burn markers region if provided."""
     fig = go.Figure()
 
-    for col in signals:
+    for i, col in enumerate(signals):
         y = df[col]
         if window and window > 1:
             y = _moving_average(y, window)
@@ -185,6 +182,7 @@ def _make_plot(df: pd.DataFrame, t: np.ndarray, signals: List[str], legend_map: 
     if subtitle:
         full_title += f"<br><sup>{subtitle}</sup>"
 
+    # distinct colors in kaleido export
     fig.update_layout(
         title=full_title,
         xaxis_title="Time (s)",
@@ -192,295 +190,305 @@ def _make_plot(df: pd.DataFrame, t: np.ndarray, signals: List[str], legend_map: 
         legend_title="Channels",
         margin=dict(l=40, r=10, t=70, b=40),
         height=560,
-      template="plotly_white",
-    colorway=["#636EFA","#EF553B","#00CC96","#AB63FA","#FFA15A",
-              "#19D3F3","#FF6692","#B6E880","#FF97FF","#FECB52"]
+        template="plotly_white",
+        colorway=["#636EFA","#EF553B","#00CC96","#AB63FA","#FFA15A",
+                  "#19D3F3","#FF6692","#B6E880","#FF97FF","#FECB52"],
+        paper_bgcolor="white",
+        plot_bgcolor="white",
     )
     return fig
 
 
-# ---------------------------
-# UI
-# ---------------------------
-st.set_page_config(page_title="Post Process GUI", layout="wide")
+# ===========================
+# App
+# ===========================
+def run():
+    st.set_page_config(page_title="Post Process GUI", layout="wide")
 
-# Optional logo (won't crash if missing)
-if Path("logo.png").exists():
-    st.image("logo.png", width=140)
+    # Optional logo (won't crash if missing)
+    if Path("logo.png").exists():
+        st.image("logo.png", width=140)
 
-st.title("Post Process GUI ")
-st.caption("Upload CSV/TDMS → choose columns → build time from Fs if needed → trim → set burn start/stop → export")
+    st.title("Post Process GUI")
+    st.caption("Upload CSV/TDMS → choose columns → build time from Fs if needed → trim → set burn start/stop → export")
 
-with st.sidebar:
-    st.header("1) Load data")
-    kind = st.radio("File type", ["CSV", "TDMS"], horizontal=True)
-    file = st.file_uploader("Upload file", type=(['csv'] if kind == 'CSV' else ['tdms']))
+    with st.sidebar:
+        st.header("1) Load data")
+        kind = st.radio("File type", ["CSV", "TDMS"], horizontal=True)
+        file = st.file_uploader("Upload file", type=(['csv'] if kind == 'CSV' else ['tdms']))
 
-    df: Optional[pd.DataFrame] = None
-    if file is not None:
-        if kind == "CSV":
-            st.subheader("CSV options")
-            auto_detect = st.checkbox("Auto-detect delimiter", value=True)
-            sep = st.selectbox("Delimiter (if not auto)", options=[",", ";", "\t", " ", "|"], index=0)
-            header_has_row = st.checkbox("First row is header", value=True)
-            skiprows = st.number_input("Rows to skip at top (metadata)", min_value=0, value=0, step=1)
-            encoding = st.selectbox("Encoding", ["utf-8", "latin-1", "utf-16"], index=0)
-            engine = st.selectbox("Engine", ["c", "python"], index=0)
-            on_bad = st.selectbox("On bad lines (python engine)", ["error", "warn", "skip"], index=2)
-            try:
-                df = _load_csv(file, sep=sep, header_row=header_has_row, skiprows=skiprows,
-                               engine=engine, encoding=encoding, on_bad_lines=on_bad, auto_detect=auto_detect)
-                df = df.reset_index(drop=True)
-            except Exception as e:
-                st.error(f"Failed to read CSV: {e}")
-        else:
-            if not _HAS_TDMS:
-                st.warning("nptdms not installed. Run: pip install nptdms")
-            try:
-                df = _load_tdms(file)
-                df = df.reset_index(drop=True)
-            except Exception as e:
-                st.error(f"Failed to read TDMS: {e}")
+        df: Optional[pd.DataFrame] = None
+        if file is not None:
+            if kind == "CSV":
+                st.subheader("CSV options")
+                auto_detect = st.checkbox("Auto-detect delimiter", value=True)
+                sep = st.selectbox("Delimiter (if not auto)", options=[",", ";", "\t", " ", "|"], index=0)
+                header_has_row = st.checkbox("First row is header", value=True)
+                skiprows = st.number_input("Rows to skip at top (metadata)", min_value=0, value=0, step=1)
+                encoding = st.selectbox("Encoding", ["utf-8", "latin-1", "utf-16"], index=0)
+                engine = st.selectbox("Engine", ["c", "python"], index=0)
+                on_bad = st.selectbox("On bad lines (python engine)", ["error", "warn", "skip"], index=2)
+                try:
+                    df = _load_csv(file, sep=sep, header_row=header_has_row, skiprows=skiprows,
+                                   engine=engine, encoding=encoding, on_bad_lines=on_bad, auto_detect=auto_detect)
+                    df = df.reset_index(drop=True)
+                    # CLEAN & CONVERT (prevents channel picker crashes)
+                    df.columns = df.columns.astype(str).str.strip()
+                    df = df.loc[:, ~df.columns.duplicated()]
+                    df = df.apply(pd.to_numeric, errors='ignore')
+                except Exception as e:
+                    st.error(f"Failed to read CSV: {e}")
+            else:
+                if not _HAS_TDMS:
+                    st.warning("nptdms not installed. Run: pip install nptdms")
+                try:
+                    df = _load_tdms(file)
+                    df = df.reset_index(drop=True)
+                    df.columns = df.columns.astype(str).str.strip()
+                    df = df.loc[:, ~df.columns.duplicated()]
+                    df = df.apply(pd.to_numeric, errors='ignore')
+                except Exception as e:
+                    st.error(f"Failed to read TDMS: {e}")
 
-    st.divider()
-    st.header("2) Time base")
-    time_mode = st.radio("Use time from:", ["Sample rate (Fs)", "Existing time column"], index=0,
-                         help="Your files are samples vs data; pick Fs to build time axis")
-    fs = st.number_input("Sample rate (Hz)", min_value=1.0, value=12497.0, step=1.0)
+        st.divider()
+        st.header("2) Time base")
+        time_mode = st.radio("Use time from:", ["Sample rate (Fs)", "Existing time column"], index=0,
+                             help="Your files are samples vs data; pick Fs to build time axis")
+        fs = st.number_input("Sample rate (Hz)", min_value=1.0, value=12497.0, step=1.0)
 
-    time_col = None
-    if df is not None and time_mode == "Existing time column":
-        time_guess, _ = _infer_time_and_signals(df)
-        if time_guess is None:
-            st.warning("No obvious time column found; falling back to sample rate.")
-            time_mode = "Sample rate (Fs)"
-        else:
-            time_col = st.selectbox("Time column", options=list(df.columns), index=list(df.columns).index(time_guess))
+        time_col = None
+        if df is not None and time_mode == "Existing time column":
+            time_guess, _ = _infer_time_and_signals(df)
+            if time_guess is None:
+                st.warning("No obvious time column found; falling back to sample rate.")
+                time_mode = "Sample rate (Fs)"
+            else:
+                time_col = st.selectbox("Time column", options=list(df.columns), index=list(df.columns).index(time_guess))
 
-    st.divider()
-    st.header("3) Channels")
-    if df is not None:
-        _, signals_guess = _infer_time_and_signals(df)
-        quick = st.selectbox("Quick pick one channel", options=signals_guess, index=0)
-        signal_cols = st.multiselect("Channels to plot (multi-select)", options=list(df.columns),
-                                     default=[quick], help="Hold Ctrl/Cmd to select multiple")
-    else:
-        signal_cols = []
-
-    # Burn detection channel: pick which channel to visually align your burn markers against
-    st.divider()
-    st.header("Burn detection")
-    if df is not None and signal_cols:
-        burn_channel_select = st.selectbox(
-            "Channel to reference while choosing burn markers",
-            options=signal_cols, index=0,
-            help="Markers are manual, but this helps you decide visually."
-        )
-    else:
-        burn_channel_select = None
-
-    st.divider()
-    st.header("4) Smoothing")
-    window = st.number_input("Moving-average window (samples)", min_value=1, max_value=10001, value=1, step=1)
-
-    st.divider()
-    st.header("5) Ignition flag (optional)")
-    ign_method = st.radio("Method", ["manual", "threshold", "existing"],
-                          help="Manual: pick time; Threshold: detect crossing; Existing: use 'ignition_flag' column")
-    ign_time_in = None
-    thr_chan = None
-    thr_val = None
-    thr_dir = "rising"
-
-    if ign_method == "manual":
-        ign_time_in = st.number_input("Ignition time (s)", min_value=0.0, value=0.0)
-    elif ign_method == "threshold":
+        st.divider()
+        st.header("3) Channels")
         if df is not None:
-            thr_chan = st.selectbox("Channel for threshold", options=signal_cols or list(df.columns))
-        thr_val = st.number_input("Threshold value", value=0.0)
-        thr_dir = st.radio("Direction", ["rising", "falling"], horizontal=True)
+            numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+            options = numeric_cols if numeric_cols else list(df.columns)
+            if len(options) == 0:
+                st.error("No columns detected. Check 'First row is header' and delimiter.")
+                st.stop()
+            quick = st.selectbox("Quick pick one channel", options=options, index=0)
+            default_selection = [quick] if quick else []
+            signal_cols = st.multiselect("Channels to plot (multi-select)", options=options,
+                                         default=default_selection, help="Hold Ctrl/Cmd to select multiple")
+            if len(signal_cols) == 0:
+                st.warning("No channels selected. Pick at least one to plot.")
+        else:
+            signal_cols = []
 
-st.divider()
+        # Optional helper: reference channel (purely visual help)
+        st.divider()
+        st.header("Burn detection")
+        if df is not None and signal_cols:
+            burn_channel_select = st.selectbox(
+                "Channel to reference while choosing burn markers",
+                options=signal_cols, index=0,
+                help="Markers are manual; this is just a visual reference."
+            )
+        else:
+            burn_channel_select = None
 
-if df is None:
-    st.info("Upload a file to begin.")
-    st.stop()
+        st.divider()
+        st.header("4) Smoothing")
+        window = st.number_input("Moving-average window (samples)", min_value=1, max_value=10001, value=1, step=1)
 
-# Build time axis (absolute), then we'll trim and convert to zero-based
-t_secs = _time_from_samplerate(len(df), fs, index=df.index) if time_mode == "Sample rate (Fs)" else _to_seconds(df[time_col]).set_axis(df.index)
+        st.divider()
+        st.header("5) Ignition flag (optional)")
+        ign_method = st.radio("Method", ["manual", "threshold", "existing"],
+                              help="Manual: pick time; Threshold: detect crossing; Existing: use 'ignition_flag' column")
+        ign_time_in = None
+        thr_chan = None
+        thr_val = None
+        thr_dir = "rising"
 
-# Plot customization
-st.subheader("Plot customization")
-colA, colB = st.columns([2, 1])
-with colA:
-    chart_title = st.text_input("Chart title", value="Signals vs Time")
-with colB:
-    exp_date = st.date_input("Experiment date")
+        if ign_method == "manual":
+            ign_time_in = st.number_input("Ignition time (s)", min_value=0.0, value=0.0)
+        elif ign_method == "threshold":
+            if df is not None:
+                thr_chan = st.selectbox("Channel for threshold", options=signal_cols or list(df.columns))
+            thr_val = st.number_input("Threshold value", value=0.0)
+            thr_dir = st.radio("Direction", ["rising", "falling"], horizontal=True)
 
-# Legend labels
-legend_map: Dict[str, str] = {}
-with st.expander("Legend labels (rename per channel)"):
-    for ch in signal_cols:
-        legend_map[ch] = st.text_input(f"Label for '{ch}'", value=ch, key=f"legend_{ch}")
+    st.divider()
 
-# Ignition flag compute (on absolute timebase)
-ign_flag, detected_time = _compute_ignition_flag(
-    df, t=t_secs, method=ign_method,
-    manual_time=ign_time_in, threshold_channel=thr_chan,
-    threshold_value=thr_val, direction=thr_dir,
-)
-_df = df.copy()
-_df["ignition_flag"] = ign_flag.astype(int)
+    if df is None:
+        st.info("Upload a file to begin.")
+        st.stop()
 
-# Time window (absolute), then convert to zero-based inside cut
-st.subheader("Time window")
-left, right = st.columns([3, 2])
-with left:
-    t0, t1 = float(t_secs.min()), float(t_secs.max())
-    w = st.slider("Select range (s)", min_value=t0, max_value=t1, value=(t0, t1))
-with right:
-    st.write("Manual cut (precise)")
-    man_tmin = st.number_input("Start (s)", value=w[0], step=0.001, format="%.6f")
-    man_tmax = st.number_input("End (s)", value=w[1], step=0.001, format="%.6f")
+    # Build time axis (absolute), then trim & convert to zero-based
+    t_secs = _time_from_samplerate(len(df), fs, index=df.index) if time_mode == "Sample rate (Fs)" else _to_seconds(df[time_col]).set_axis(df.index)
 
-final_tmin = float(man_tmin)
-final_tmax = float(man_tmax)
+    # Plot customization
+    st.subheader("Plot customization")
+    colA, colB = st.columns([2, 1])
+    with colA:
+        chart_title = st.text_input("Chart title", value="Signals vs Time")
+    with colB:
+        exp_date = st.date_input("Experiment date")
 
-# Cut mask & zero-based time for analysis/plot/export
-t_np = t_secs.to_numpy()
-cut_mask = (t_np >= final_tmin) & (t_np <= final_tmax)
+    # Legend labels
+    legend_map: Dict[str, str] = {}
+    with st.expander("Legend labels (rename per channel)"):
+        for ch in signal_cols:
+            legend_map[ch] = st.text_input(f"Label for '{ch}'", value=ch, key=f"legend_{ch}")
 
-t_cut = t_np[cut_mask]
-if t_cut.size == 0:
-    st.error("Selected time window is empty. Adjust the range.")
-    st.stop()
-t_rel = t_cut - float(t_cut[0])  # zero-based time within trimmed window
+    # Ignition flag compute (on absolute timebase)
+    ign_flag, detected_time = _compute_ignition_flag(
+        df, t=t_secs, method=ign_method,
+        manual_time=ign_time_in, threshold_channel=thr_chan,
+        threshold_value=thr_val, direction=thr_dir,
+    )
+    _df = df.copy()
+    _df["ignition_flag"] = ign_flag.astype(int)
 
-# Ignition relative marker (if inside window)
-ign_rel = None
-if ign_method == "manual":
-    ign_rel = float(ign_time_in - final_tmin) if ign_time_in is not None and (final_tmin <= ign_time_in <= final_tmax) else None
-else:
-    if detected_time is not None and (final_tmin <= detected_time <= final_tmax):
-        ign_rel = float(detected_time - final_tmin)
+    # Time window (absolute), then convert to zero-based inside cut
+    st.subheader("Time window")
+    left, right = st.columns([3, 2])
+    with left:
+        t0, t1 = float(t_secs.min()), float(t_secs.max())
+        w = st.slider("Select range (s)", min_value=t0, max_value=t1, value=(t0, t1))
+    with right:
+        st.write("Manual cut (precise)")
+        man_tmin = st.number_input("Start (s)", value=w[0], step=0.001, format="%.6f")
+        man_tmax = st.number_input("End (s)", value=w[1], step=0.001, format="%.6f")
 
-# ---------------------------
-# MANUAL Burn markers
-# ---------------------------
-st.subheader("Burn markers (manual)")
-bcol1, bcol2 = st.columns([3, 2])
+    final_tmin = float(man_tmin)
+    final_tmax = float(man_tmax)
 
-# Default burn window = full trimmed duration
-default_b0 = 0.0
-default_b1 = float(t_rel[-1])
+    # Cut mask & zero-based time
+    t_np = t_secs.to_numpy()
+    cut_mask = (t_np >= final_tmin) & (t_np <= final_tmax)
+    t_cut = t_np[cut_mask]
+    if t_cut.size == 0:
+        st.error("Selected time window is empty. Adjust the range.")
+        st.stop()
+    t_rel = t_cut - float(t_cut[0])  # zero-based time within trimmed window
 
-with bcol1:
-    burn_range = st.slider(
-        "Drag to set burn START and STOP (s, relative to trimmed window)",
-        min_value=0.0, max_value=float(t_rel[-1]),
-        value=(default_b0, default_b1), step=max(float((t_rel[-1]) / 2000.0), 1e-6),
-        help="This only sets the two vertical markers; duration = STOP - START."
+    # Ignition relative marker (if inside window)
+    ign_rel = None
+    if ign_method == "manual":
+        ign_rel = float(ign_time_in - final_tmin) if ign_time_in is not None and (final_tmin <= ign_time_in <= final_tmax) else None
+    else:
+        if detected_time is not None and (final_tmin <= detected_time <= final_tmax):
+            ign_rel = float(detected_time - final_tmin)
+
+    # ---------------------------
+    # MANUAL Burn markers
+    # ---------------------------
+    st.subheader("Burn markers (manual)")
+    bcol1, bcol2 = st.columns([3, 2])
+
+    default_b0 = 0.0
+    default_b1 = float(t_rel[-1])
+
+    with bcol1:
+        burn_range = st.slider(
+            "Drag to set burn START and STOP (s, relative to trimmed window)",
+            min_value=0.0, max_value=float(t_rel[-1]),
+            value=(default_b0, default_b1), step=max(float((t_rel[-1]) / 2000.0), 1e-6),
+            help="Duration = STOP - START."
+        )
+
+    with bcol2:
+        b0 = st.number_input("Burn START (s, relative)", value=burn_range[0], min_value=0.0, max_value=float(t_rel[-1]),
+                             step=0.000001, format="%.6f")
+        b1 = st.number_input("Burn STOP (s, relative)",  value=burn_range[1], min_value=0.0, max_value=float(t_rel[-1]),
+                             step=0.000001, format="%.6f")
+        if b1 < b0:
+            b0, b1 = b1, b0
+
+    burn_duration = float(max(0.0, b1 - b0))
+    burn_markers = (float(b0), float(b1))
+
+    # Plot (zero-based) with manual burn region
+    fig = _make_plot(
+        _df.loc[cut_mask, :],
+        t=t_rel,
+        signals=signal_cols,
+        legend_map=legend_map,
+        window=window,
+        ignition_time_rel=ign_rel,
+        title=chart_title,
+        subtitle=str(exp_date) if exp_date else None,
+        burn_markers=burn_markers
     )
 
-with bcol2:
-    b0 = st.number_input("Burn START (s, relative)", value=burn_range[0], min_value=0.0, max_value=float(t_rel[-1]), step=0.000001, format="%.6f")
-    b1 = st.number_input("Burn STOP (s, relative)",  value=burn_range[1], min_value=0.0, max_value=float(t_rel[-1]), step=0.000001, format="%.6f")
-    # Ensure order
-    if b1 < b0:
-        b0, b1 = b1, b0
+    st.plotly_chart(fig, use_container_width=True)
 
-burn_duration = float(max(0.0, b1 - b0))
-burn_markers = (float(b0), float(b1))
+    # Info + preview
+    info_left, info_right = st.columns([1, 2])
+    with info_left:
+        st.markdown(f"**Samples (cut):** {int(cut_mask.sum())}")
+        st.markdown(f"**Duration (cut):** {t_rel[-1]:.6f} s")
+        if ign_rel is not None:
+            st.markdown(f"**Ignition @** {ign_rel:.6f} s (relative)")
+        if burn_channel_select:
+            st.markdown(f"**Reference channel:** {burn_channel_select}")
+        st.markdown(f"**Burn START:** {b0:.6f} s")
+        st.markdown(f"**Burn STOP:** {b1:.6f} s")
+        st.markdown(f"**Burn time:** {burn_duration:.6f} s")
+    with info_right:
+        preview_cols = signal_cols + ["ignition_flag"]
+        preview_df = _df.loc[cut_mask, preview_cols].copy()
+        preview_df.insert(0, "time_s_rel", t_rel)
+        preview_df["burn_flag"] = ((t_rel >= b0) & (t_rel <= b1)).astype(int)
+        st.dataframe(preview_df.head(50), use_container_width=True)
 
-# Plot (zero-based) with manual burn region
-fig = _make_plot(
-    _df.loc[cut_mask, :],
-    t=t_rel,
-    signals=signal_cols,
-    legend_map=legend_map,
-    window=window,
-    ignition_time_rel=ign_rel,
-    title=chart_title,
-    subtitle=str(exp_date) if exp_date else None,
-    burn_markers=burn_markers
-)
+    # ---------------------------
+    # Exports
+    # ---------------------------
+    st.divider()
+    st.subheader("Export (uses zero-based time)")
 
-st.plotly_chart(fig, use_container_width=True)
+    cut_df = _df.loc[cut_mask, signal_cols].copy()
+    cut_df.insert(0, "time_s_rel", t_rel)
+    cut_df["ignition_flag"] = _df.loc[cut_mask, "ignition_flag"].values
+    cut_df["burn_flag"] = ((t_rel >= b0) & (t_rel <= b1)).astype(int)
 
-# Info + preview
-info_left, info_right = st.columns([1, 2])
-with info_left:
-    st.markdown(f"**Samples (cut):** {int(cut_mask.sum())}")
-    st.markdown(f"**Duration (cut):** {t_rel[-1]:.6f} s")
-    if ign_rel is not None:
-        st.markdown(f"**Ignition @** {ign_rel:.6f} s (relative)")
-    if burn_channel_select:
-        st.markdown(f"**Reference channel:** {burn_channel_select}")
-    st.markdown(f"**Burn START:** {b0:.6f} s")
-    st.markdown(f"**Burn STOP:** {b1:.6f} s")
-    st.markdown(f"**Burn time:** {burn_duration:.6f} s")
-with info_right:
-    preview_cols = signal_cols + ["ignition_flag"]
-    preview_df = _df.loc[cut_mask, preview_cols].copy()
-    preview_df.insert(0, "time_s_rel", t_rel)
-    # optional burn flag column for preview
-    preview_df["burn_flag"] = ((t_rel >= b0) & (t_rel <= b1)).astype(int)
-    st.dataframe(preview_df.head(50), use_container_width=True)
+    csv_bytes = cut_df.to_csv(index=False).encode("utf-8")
+    base_name = (chart_title or "signals_plot").strip().replace(" ", "_")
 
-# ---------------------------
-# Exports
-# ---------------------------
-st.divider()
-st.subheader("Export (uses zero-based time)")
+    st.download_button("Download cut CSV", data=csv_bytes, file_name=f"{base_name}_cut.csv", mime="text/csv")
 
-cut_df = _df.loc[cut_mask, signal_cols].copy()
-cut_df.insert(0, "time_s_rel", t_rel)
-cut_df["ignition_flag"] = _df.loc[cut_mask, "ignition_flag"].values
-cut_df["burn_flag"] = ((t_rel >= b0) & (t_rel <= b1)).astype(int)
+    try:
+        png_bytes = fig.to_image(format="png", width=1400, height=650, scale=2)
+        st.download_button("Download plot PNG", data=png_bytes, file_name=f"{base_name}.png", mime="image/png")
+    except Exception as e:
+        with st.expander("PNG export troubleshooting"):
+            st.warning("PNG export requires 'kaleido'. Add `kaleido` to requirements.txt.")
+            st.code(str(e))
 
-csv_bytes = cut_df.to_csv(index=False).encode("utf-8")
-base_name = (chart_title or "signals_plot").strip().replace(" ", "_")
+    # Session meta
+    import json
+    meta = {
+        "chart_title": chart_title,
+        "experiment_date": str(exp_date) if exp_date else None,
+        "time_mode": "Fs" if time_mode == "Sample rate (Fs)" else "existing_col",
+        "fs_hz": float(fs) if time_mode == "Sample rate (Fs)" else None,
+        "ignition_method": ign_method,
+        "ignition_time_s_rel": ign_rel,
+        "time_window_s_abs": [final_tmin, final_tmax],
+        "duration_s_rel": float(t_rel[-1]),
+        "channels": signal_cols,
+        "legend_map": legend_map,
+        "burn_markers_s_rel": {"start": float(b0), "stop": float(b1), "duration": burn_duration},
+        "reference_channel": burn_channel_select
+    }
+    meta_bytes = json.dumps(meta, indent=2).encode("utf-8")
+    st.download_button("Download session meta (JSON)", data=meta_bytes, file_name=f"{base_name}_meta.json", mime="application/json")
 
-st.download_button("Download cut CSV", data=csv_bytes, file_name=f"{base_name}_cut.csv", mime="text/csv")
+    st.caption("© Spacefield – Local analysis utility. Built with Streamlit.")
 
-try:
-    png_bytes = fig.to_image(format="png", width=1400, height=650, scale=2)
-    st.download_button("Download plot PNG", data=png_bytes, file_name=f"{base_name}.png", mime="image/png")
-except Exception as e:
-    with st.expander("PNG export troubleshooting"):
-        st.warning("PNG export requires 'kaleido'. Add `kaleido` to requirements.txt.")
-        st.code(str(e))
 
-# Session meta
-import json
-meta = {
-    "chart_title": chart_title,
-    "experiment_date": str(exp_date) if exp_date else None,
-    "time_mode": "Fs" if time_mode == "Sample rate (Fs)" else "existing_col",
-    "fs_hz": float(fs) if time_mode == "Sample rate (Fs)" else None,
-    "ignition_method": ign_method,
-    "ignition_time_s_rel": ign_rel,
-    "time_window_s_abs": [final_tmin, final_tmax],
-    "duration_s_rel": float(t_rel[-1]),
-    "channels": signal_cols,
-    "legend_map": legend_map,
-    "burn_markers_s_rel": {"start": float(b0), "stop": float(b1), "duration": burn_duration},
-    "reference_channel": burn_channel_select
-}
-meta_bytes = json.dumps(meta, indent=2).encode("utf-8")
-st.download_button("Download session meta (JSON)", data=meta_bytes, file_name=f"{base_name}_meta.json", mime="application/json")
-
-st.caption("© Spacefield – Local analysis utility. Built with Streamlit.")
-import traceback
-
-def run():
-    # MOVE everything from st.set_page_config(...) down to here
-    pass
-
+# Run with error surfacing in the UI
 try:
     run()
 except Exception:
     st.error("Unexpected error in app:")
     st.code("".join(traceback.format_exc()))
-
-
